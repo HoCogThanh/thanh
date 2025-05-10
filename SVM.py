@@ -74,19 +74,14 @@ def shear_image(image):
     h, w = image.shape[:2]
     M = np.array([[1, shear_factor, 0], [shear_factor, 1, 0]], dtype=np.float32)
     return cv2.warpAffine(image, M, (w, h))
-#Histogram color
-def extract_color_histogram(image, bins=(16, 16, 16)):
-    hist = cv2.calcHist([image], [0, 1, 2], None, bins,
-                        [0, 256, 0, 256, 0, 256])
-    hist = cv2.normalize(hist, hist).flatten()
-    return hist
-
 
 #Augment_image va trich xuat hog&giam chieu PCA
+
 # ==== Cấu hình đường dẫn và thông tin ====
+
 data_dir = "/content/drive/MyDrive/DATASET/Lua"
-dest_dir = '/content/drive/MyDrive/Train_Lua_5'
-processed_log_path = "/content/drive/MyDrive/Train_Lua_5/processed_images_lua.txt"
+dest_dir = '/content/drive/MyDrive/Train_Lua_5_BT00'
+processed_log_path = "/content/drive/MyDrive/Train_Lua_5_BT00/processed_images_lua.txt"
 
 batch_size = 2000
 X_batch, y_batch = [], []
@@ -94,11 +89,32 @@ X_batch, y_batch = [], []
 # ==== Danh sách lớp ====
 categories = [
     'sheath_blight', 'bacterial_leaf_blight',
-    'leaf_scald', 'rice_hispa', 'brown_spot'
+    'leaf_scald', 'rice_hispa', 'healthy'
 ]
 
 # ==== Đảm bảo thư mục tồn tại ====
 os.makedirs(dest_dir, exist_ok=True)
+
+# ==== Các hàm augmentation đơn giản ====
+def rotate_image(img):
+    angle = random.randint(-20, 20)
+    (h, w) = img.shape[:2]
+    M = cv2.getRotationMatrix2D((w/2, h/2), angle, 1.0)
+    return cv2.warpAffine(img, M, (w, h))
+
+def flip_image(img):
+    return cv2.flip(img, 1)  # Lật ngang
+
+def shear_image(img):
+    shear = random.uniform(-0.2, 0.2)
+    M = np.array([[1, shear, 0],
+                  [0,    1, 0]], dtype=np.float32)
+    (h, w) = img.shape[:2]
+    return cv2.warpAffine(img, M, (w, h))
+
+def adjust_brightness(img):
+    factor = random.uniform(0.7, 1.3)
+    return np.clip(img * factor, 0, 255).astype(np.uint8)
 
 def augment_image(img, n_augments=3):
     images = [img]
@@ -137,19 +153,21 @@ if sample_img is not None:
     plt.show()
 
 # ==== Kiểm tra batch đã tồn tại ====
+
 batch_files = sorted([
     f for f in os.listdir(dest_dir)
-    if f.startswith("raw_hog_batch_") and f.endswith(".npz")
+    if f.startswith("hog_batch_scaled_") and f.endswith(".npz")  # <<< sửa lại tên batch
 ])
 existing_batches = sorted([
     int(f.split("_")[-1].split(".")[0])
     for f in batch_files
 ])
 
-# ==== Nếu đủ batch thì xử lý PCA ====
+# ==== Nếu đủ batch thì CHIA LUÔN train/val/test ====
 if len(batch_files) == 18:
-    print(f"\n Đã có đủ {len(batch_files)} batch. Bắt đầu xử lý PCA và chia tập dl...")
+    print(f"\n Đã có đủ {len(batch_files)} batch. Bắt đầu chia tập dữ liệu...")
 
+    # Load toàn bộ batch
     X_all = np.concatenate([
         np.load(os.path.join(dest_dir, f))['X'] for f in batch_files
     ], axis=0)
@@ -157,30 +175,13 @@ if len(batch_files) == 18:
         np.load(os.path.join(dest_dir, f))['y'] for f in batch_files
     ], axis=0)
 
-    print("\n Đang chuẩn hóa và giảm chiều...")
-    #Khởi tạo scaler
-    scaler = StandardScaler()
-    #Khởi tạo IncrementalPCA với số lượng thành phần đã tính
-    pca = IncrementalPCA(n_components=500)
-    #Lặp qua từng Batch để fit scaler và PCA
-    batch_sizePCA = 2000
-    n_batchesPCA = len(X_all) // batch_sizePCA
-    #scaler và PCA từng batch
-    for i in range(n_batchesPCA):
-        X_batchPCA = X_all[i * batch_sizePCA:(i + 1) * batch_sizePCA]
-        X_scaled = scaler.fit_transform(X_batchPCA) if i == 0 else scaler.transform(X_batchPCA)
-        pca.partial_fit(X_scaled)
+    print("\n Chia train/val/test...")
 
-    joblib.dump(scaler, f"{dest_dir}/scaler.pkl")
-    joblib.dump(pca, f"{dest_dir}/pca.pkl")
+    # Chia dữ liệu
+    X_train, X_temp, y_train, y_temp = train_test_split(X_all, y_all, test_size=0.2, stratify=y_all, random_state=42)
+    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, stratify=y_temp, random_state=42)
 
-    X_scaled = scaler.transform(X_all)
-    X_pca = pca.transform(X_scaled)
-
-
-    X_train, X_temp, y_train, y_temp = train_test_split(X_pca, y_all, test_size=0.2, stratify=y_all)
-    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, stratify=y_temp)
-
+    # Lưu
     np.save(f"{dest_dir}/X_train.npy", X_train)
     np.save(f"{dest_dir}/X_val.npy", X_val)
     np.save(f"{dest_dir}/X_test.npy", X_test)
@@ -188,11 +189,11 @@ if len(batch_files) == 18:
     np.save(f"{dest_dir}/y_val.npy", y_val)
     np.save(f"{dest_dir}/y_test.npy", y_test)
 
-    print("\nĐã chia và lưu train/val/test sau khi giảm chiều PCA.")
+    print("\n Đã chia và lưu train/val/test từ đặc trưng HOG.")
 
 # ==== Nếu chưa đủ batch thì tiếp tục trích xuất ====
 else:
-    print(f"\n Mới có {len(batch_files)} batch. Cần 18 batch để xử lý PCA.")
+    print(f"\n Mới có {len(batch_files)} batch. Cần 18 batch để xử lý.")
     if existing_batches:
         last_batch = max(existing_batches)
         batch_counter = last_batch + 1
@@ -237,26 +238,31 @@ else:
                     feature_vector=True,
                     visualize=True
                 )
-                #color_hist = extract_color_histogram(aug_img)
-                #combined_features = np.concatenate((hog_features, color_hist))
                 X_batch.append(hog_features)
                 y_batch.append(idx)
 
                 if len(X_batch) >= batch_size:
-                    np.savez_compressed(f"{dest_dir}/raw_hog_batch_{batch_counter}.npz", X=X_batch, y=y_batch)
-                    print(f" Đã lưu raw batch {batch_counter} với {len(X_batch)} mẫu")
+                    # ==== Chuẩn hóa batch trước khi lưu ====
+                    scaler = StandardScaler()
+                    X_batch_scaled = scaler.fit_transform(X_batch)
+
+                    np.savez_compressed(f"{dest_dir}/hog_batch_scaled_{batch_counter}.npz", X=X_batch_scaled, y=y_batch)
+                    print(f" Đã lưu batch {batch_counter} (chuẩn hóa) với {len(X_batch)} mẫu")
                     X_batch, y_batch = [], []
                     batch_counter += 1
-
 
             processed_images.add(image_id)
             with open(processed_log_path, "a") as f:
                 f.write(image_id + "\n")
 
     if X_batch:
-        np.savez_compressed(f"{dest_dir}/raw_hog_batch_{batch_counter}.npz", X=X_batch, y=y_batch)
-        print(f" Đã lưu raw batch cuối {batch_counter} với {len(X_batch)} mẫu")
-#HSVM & Ramdom forest
+        scaler = StandardScaler()
+        X_batch_scaled = scaler.fit_transform(X_batch)
+        np.savez_compressed(f"{dest_dir}/hog_batch_scaled_{batch_counter}.npz", X=X_batch_scaled, y=y_batch)
+        print(f" Đã lưu batch cuối {batch_counter} (chuẩn hóa) với {len(X_batch)} mẫu")
+
+
+#SVM & Ramdom forest
 
 
 from sklearn.ensemble import RandomForestClassifier
@@ -306,26 +312,6 @@ print_class_distribution(y_train, "Train")
 print_class_distribution(y_val, "Validation")
 print_class_distribution(y_test, "Test")
 
-'''
-from sklearn.model_selection import GridSearchCV
-from sklearn.svm import SVC
-
-# Thử nghiệm các giá trị khác nhau
-param_grid = {
-    'C': [0.1, 1, 10, 20],
-    'gamma': [1, 0.1, 0.01],
-    'kernel': ['rbf']
-}
-
-# Khởi tạo GridSearchCV với 5-fold cross-validation
-svm_model = GridSearchCV(SVC(), param_grid, cv=5, scoring='f1_weighted', verbose=1, n_jobs=-1)
-
-# Huấn luyện trên tập train
-svm_model.fit(X_train, y_train)
-
-# In ra tham số tốt nhất
-print("Best parameters found:", svm_model.best_params_)
-'''
 print("\nĐang huấn luyện mô hình SVM...")
 svm_model = SVC(kernel='rbf', C=20.0, gamma='scale')
 svm_model.fit(X_train, y_train)
@@ -414,7 +400,7 @@ def predict_image(image_path, model, scaler):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     # Trích xuất HOG
-    hog_feature = hog(gray, pixels_per_cell=(8,8), cells_per_block=(2,2), feature_vector=True)
+    hog_feature = hog(gray, pixels_per_cell=(16,16), cells_per_block=(4,4), feature_vector=True)
 
     # Chuẩn hóa
     hog_feature = scaler.transform([hog_feature])
@@ -424,8 +410,8 @@ def predict_image(image_path, model, scaler):
     return prediction[0]
 
 # Load model và scaler
-svm_model = joblib.load("/content/drive/MyDrive/Train_Lua_5/svm_model.pkl")
-scaler = joblib.load("/content/drive/MyDrive/Train_Lua_5/scaler.pkl")
+svm_model = joblib.load("/content/drive/MyDrive/Train_Lua_5_BT00/svm_model.pkl")
+scaler = joblib.load("/content/drive/MyDrive/Train_Lua_5_BT00/scaler.pkl")
 
 # Test với một ảnh mới
 image_path = "/content/drive/MyDrive/img/img1.png"
